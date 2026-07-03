@@ -47,7 +47,13 @@ curl http://localhost:8123/ping   # → Ok.
 Creates all `bm_*` tables and fills them with synthetic data at the production-scale profile above. After inserting raw rows, materializes the daily and monthly rollup tables via `INSERT … SELECT … GROUP BY`.
 
 ```bash
-python3.11 phase1.py --seed
+python phase1.py --seed
+```
+
+### Or Seed a single source only
+
+```bash
+python phase1.py --seed --sources external_bet
 ```
 
 ### Status — check what was seeded
@@ -55,7 +61,7 @@ python3.11 phase1.py --seed
 Reads `system.parts` and prints row counts and compressed on-disk sizes for every `bm_*` table. Use this to verify seeding completed correctly.
 
 ```bash
-python3.11 phase1.py --status
+python phase1.py --status
 ```
 
 ### Bench — run query latency benchmark (~5 min)
@@ -68,25 +74,14 @@ Runs 13 queries covering all three sources and all tiers (raw, mv_daily, mv_mont
 Reports p50 / p95 / p99 / max and flags any p99 > 200 ms as an SLO violation. Results are saved to `phase1_results.csv`.
 
 ```bash
-python3.11 phase1.py --bench
+python phase1.py --bench
 ```
 
-### Seed + bench in one go
-
-```bash
-python3.11 phase1.py --seed --bench
-```
-
-### Seed a single source only
-
-```bash
-python3.11 phase1.py --seed --sources external_bet
-```
 
 ### Drop all benchmark tables
 
 ```bash
-python3.11 phase1.py --drop
+python phase1.py --drop
 ```
 
 ## Optional flags

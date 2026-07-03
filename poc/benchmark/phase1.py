@@ -14,13 +14,15 @@ All tables are created with a bm_ prefix so they never conflict with live PoC ta
 MVs are populated via INSERT…SELECT after raw seeding (faster than trigger-based approach).
 
 Usage
+  docker compose up clickhouse -d                  # start clickhouse
+  curl http://localhost:8123/ping                  # verify clickhosue started
   pip install -r requirements.txt
   python phase1.py --seed                          # ~30 min total; run once
-  python phase1.py --bench                         # ~5 min; repeatable
-  python phase1.py --seed --bench
   python phase1.py --status                        # row counts + compressed sizes
+  python phase1.py --bench                         # ~5 min; repeatable
   python phase1.py --drop                          # wipe all bm_* tables
   python phase1.py --seed --sources external_bet   # seed one source only
+  python phase1.py --materialize-only --sources external_bet   # retry a failed rollup, no raw re-insert
   python phase1.py --host 192.168.1.10 --port 8123
 """
 
@@ -239,7 +241,11 @@ def _materialize_rollups(client, source_id: str, cfg: dict):
             f"       count() AS event_count, {amount_col} "
             f"FROM {raw_t(source_id)} "
             f"GROUP BY dim_punter_id, {sel_extra}event_type, {time_col}",
-            settings={"max_execution_time": 3600, "max_memory_usage": 8_000_000_000},
+            settings={
+                "max_execution_time": 3600,
+                "max_memory_usage": 10_000_000_000,
+                "max_bytes_before_external_group_by": 5_000_000_000,
+            },
         )
         print(f"{time.time()-t0:.0f}s")
 
@@ -385,6 +391,13 @@ def print_status(client):
                 print(f"  {tname:<42} {'(missing)':>14}")
 
 
+# ── rebuild rollups (no raw re-insert) ──────────────────────────────────────────
+
+def truncate_rollups(client, source_id: str):
+    for table in [daily_t(source_id), monthly_t(source_id)]:
+        client.command(f"TRUNCATE TABLE IF EXISTS {table}")
+
+
 # ── drop ──────────────────────────────────────────────────────────────────────
 
 def drop_all(client, sources: list[str]):
@@ -407,6 +420,9 @@ def main():
     ap.add_argument("--bench",   action="store_true", help="run query latency benchmark")
     ap.add_argument("--status",  action="store_true", help="print row counts and compressed sizes")
     ap.add_argument("--drop",    action="store_true", help="drop all bm_* tables (use before re-seeding)")
+    ap.add_argument("--materialize-only", action="store_true",
+                    help="rebuild mv_daily/mv_monthly rollups from existing raw tables, "
+                         "without re-inserting raw data (use to retry a failed materialization)")
     ap.add_argument("--sources", nargs="+", default=list(SOURCES.keys()),
                     choices=list(SOURCES.keys()),
                     metavar="SOURCE",
@@ -415,7 +431,7 @@ def main():
                     help="CSV file for benchmark results (default: phase1_results.csv)")
     args = ap.parse_args()
 
-    if not any([args.seed, args.bench, args.status, args.drop]):
+    if not any([args.seed, args.bench, args.status, args.drop, args.materialize_only]):
         ap.print_help()
         sys.exit(0)
 
@@ -447,6 +463,18 @@ def main():
             seed_source(client, sid, SOURCES[sid])
 
         print("\n  Seeding complete.")
+        print_status(client)
+
+    # ── materialize-only ─────────────────────────────────────────────────────
+    if args.materialize_only:
+        print("\n── MATERIALIZE-ONLY " + "─" * 48)
+        for sid in args.sources:
+            print(f"\n  {sid}: rebuilding rollups from existing raw data")
+            provision_tables(client, sid, SOURCES[sid])
+            truncate_rollups(client, sid)
+            _materialize_rollups(client, sid, SOURCES[sid])
+
+        print("\n  Rollups rebuilt.")
         print_status(client)
 
     # ── status ────────────────────────────────────────────────────────────────
