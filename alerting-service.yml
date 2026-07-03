@@ -1,0 +1,90 @@
+# Event sources served by Spring Cloud Config Server
+# to the alerting-service backend application.
+# Push this file to your CONFIG_GIT_URI repo as: alerting-service.yml
+
+event-sources:
+  sources:
+
+    # punter-auth-success-login — SuccessfulLoginDataDTO schema
+    - id: punter_login
+      display-name: Punter Login
+      kafka:
+        topic: punter-auth-success-login
+        consumer-group: alerting-platform
+        offset-reset: earliest
+      entity:
+        dimensions:
+          - name: punter_id
+            field: punterId
+      timestamp:
+        field: openTime
+        format: EPOCH_MILLIS
+      event-type:
+        field: eventType
+      payload-fields:
+        - name: countryCode
+          type: STRING
+        - name: hostAddress
+          type: STRING
+        - name: authMethod
+          type: STRING
+
+    # withdrawal — FinancialTransfer schema
+    - id: withdrawal
+      display-name: Withdrawal
+      kafka:
+        topic: withdrawal
+        consumer-group: alerting-platform
+        offset-reset: earliest
+      entity:
+        dimensions:
+          - name: punter_id
+            field: punterInformation.punterId
+      timestamp:
+        field: timestamp
+        format: ISO_DATETIME
+      event-type:
+        constant: withdrawal
+      payload-fields:
+        - name: amount
+          type: DOUBLE
+        - name: defaultCurrencyAmount
+          type: DOUBLE
+        - name: currency
+          type: STRING
+        - name: state
+          type: STRING
+
+    # ebs_bets — ExternalBetMessage schema
+    # Two dimensions: punter_id (primary) + bet_source (secondary)
+    # This enables both single-dim and compound aggregates, e.g.:
+    #   agg_count("external_bet", "punter_id", 7)              — all bets by this punter
+    #   agg_count("external_bet", "punter_id|bet_source", 7)   — bets by this punter from this source
+    - id: external_bet
+      display-name: External Bet
+      kafka:
+        topic: ebs_bets
+        consumer-group: alerting-platform
+        offset-reset: earliest
+      entity:
+        dimensions:
+          - name: punter_id
+            field: punterId
+          - name: bet_source
+            field: betSource
+      timestamp:
+        field: betTime
+        format: ISO_DATETIME
+      event-type:
+        field: betType
+      payload-fields:
+        - name: betAmount
+          payload-path: betAmount.amount
+          type: DOUBLE
+        - name: winAmount
+          payload-path: winAmount.amount
+          type: DOUBLE
+        - name: betState
+          type: STRING
+        - name: betSource
+          type: STRING
