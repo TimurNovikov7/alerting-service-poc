@@ -1,0 +1,280 @@
+<mxfile host="app.diagrams.net" modified="2026-06-15T00:00:00.000Z" agent="Claude Code" version="21.6.6">
+  <diagram id="eventmonitor-system-context" name="System Context">
+    <mxGraphModel dx="1434" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1654" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ═══════════════════════════════════════════════════ -->
+        <!-- ROW 1: EXTERNAL SYSTEMS                            -->
+        <!-- ═══════════════════════════════════════════════════ -->
+        <mxCell id="ext-bg" value="External Systems"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;fontStyle=1;verticalAlign=top;align=center;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="40" width="1100" height="155" as="geometry" />
+        </mxCell>
+
+        <mxCell id="svc1" value="Punter Auth Service"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="100" y="90" width="200" height="65" as="geometry" />
+        </mxCell>
+
+        <mxCell id="svc2" value="Payments Service"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="355" y="90" width="200" height="65" as="geometry" />
+        </mxCell>
+
+        <mxCell id="svc3" value="Sportsbook Service"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="610" y="90" width="200" height="65" as="geometry" />
+        </mxCell>
+
+        <mxCell id="svc4" value="(future sources)"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;fontStyle=2;"
+          vertex="1" parent="1">
+          <mxGeometry x="865" y="90" width="200" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════════════════════════════════════════════ -->
+        <!-- ROW 2: MESSAGING LAYER                             -->
+        <!-- ═══════════════════════════════════════════════════ -->
+        <mxCell id="kafka" value="&lt;b&gt;Kafka&lt;/b&gt;  (primary event bus)"
+          style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="265" width="1100" height="65" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rabbitmq" value="RabbitMQ adapter&#xa;(legacy sources only)"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=2;dashed=1;"
+          vertex="1" parent="1">
+          <mxGeometry x="1190" y="265" width="230" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════════════════════════════════════════════ -->
+        <!-- ROW 3a: EVENT MONITOR                              -->
+        <!-- ═══════════════════════════════════════════════════ -->
+        <mxCell id="em-bg" value="EVENT MONITOR&#xa;Java 17 / Spring Boot"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;verticalAlign=top;align=center;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="400" width="540" height="375" as="geometry" />
+        </mxCell>
+
+        <mxCell id="em-ingest" value="Event Ingestion&#xa;(Kafka Consumer)"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="90" y="460" width="225" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="em-rule" value="Rule Engine&#xa;(CEL Evaluator)"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="90" y="540" width="225" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="em-alert" value="Alert Manager"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="335" y="460" width="240" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="em-llm" value="LLM Authoring&#xa;(AWS Bedrock)"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="335" y="540" width="240" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="em-pg" value="PostgreSQL"
+          style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;"
+          vertex="1" parent="1">
+          <mxGeometry x="90" y="635" width="140" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="em-redis" value="Redis"
+          style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;"
+          vertex="1" parent="1">
+          <mxGeometry x="255" y="635" width="120" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="em-vault" value="Vault"
+          style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;"
+          vertex="1" parent="1">
+          <mxGeometry x="400" y="635" width="120" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════════════════════════════════════════════ -->
+        <!-- ROW 3b: CLICKHOUSE                                 -->
+        <!-- ═══════════════════════════════════════════════════ -->
+        <mxCell id="ch-bg" value="ClickHouse&#xa;(independent consumer group)"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;verticalAlign=top;align=center;"
+          vertex="1" parent="1">
+          <mxGeometry x="640" y="400" width="620" height="375" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-ke" value="kafka_{sourceId}   ·   Kafka Table Engine"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="670" y="468" width="560" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-ev" value="events_{sourceId}   ·   raw, 90-day TTL&#xa;dim_&lt;name&gt; columns  ·  MergeTree  ·  row_id"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="670" y="562" width="560" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-daily" value="mv_daily_{sourceId}&#xa;SummingMergeTree · 30d TTL"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=10;"
+          vertex="1" parent="1">
+          <mxGeometry x="670" y="668" width="265" height="65" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-monthly" value="mv_monthly_{sourceId}&#xa;SummingMergeTree · permanent"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=10;"
+          vertex="1" parent="1">
+          <mxGeometry x="965" y="668" width="265" height="65" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-backfill" value="↑  bulk load path (backfill, bypasses Kafka engine)"
+          style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=10;fontStyle=2;strokeColor=none;fillColor=none;"
+          vertex="1" parent="1">
+          <mxGeometry x="670" y="745" width="560" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════════════════════════════════════════════ -->
+        <!-- ROW 3c: SPRING CLOUD CONFIG SERVER                 -->
+        <!-- ═══════════════════════════════════════════════════ -->
+        <mxCell id="config" value="Spring Cloud Config Server&#xa;YAML source config · Git-backed"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;fontStyle=2;"
+          vertex="1" parent="1">
+          <mxGeometry x="1295" y="420" width="250" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════════════════════════════════════════════ -->
+        <!-- ROW 4: OUTPUTS                                     -->
+        <!-- ═══════════════════════════════════════════════════ -->
+        <mxCell id="alerts-topic" value="&lt;b&gt;alerts.fired&lt;/b&gt;&#xa;Kafka topic"
+          style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=12;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="60" y="855" width="185" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="downstream" value="Account Service → suspend player&#xa;Notification Service → email / SMS&#xa;KYC Service → document verification&#xa;Compliance → regulatory report"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;"
+          vertex="1" parent="1">
+          <mxGeometry x="270" y="855" width="310" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="prometheus" value="Prometheus / Grafana&#xa;(observability)"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="640" y="855" width="200" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="react-spa" value="React SPA&#xa;Rule authoring&#xa;Alert dashboard"
+          style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;fontSize=11;"
+          vertex="1" parent="1">
+          <mxGeometry x="895" y="855" width="200" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- ═══════════════════════════════════════════════════ -->
+        <!-- EDGES                                              -->
+        <!-- ═══════════════════════════════════════════════════ -->
+
+        <!-- External Systems → Kafka -->
+        <mxCell id="e1" value="Kafka topics"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontStyle=1;rounded=0;exitX=0.3;exitY=1;exitDx=0;exitDy=0;entryX=0.3;entryY=0;entryDx=0;entryDy=0;"
+          edge="1" source="ext-bg" target="kafka" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- RabbitMQ → Kafka (legacy) -->
+        <mxCell id="e2" value="legacy"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#d6b656;fontColor=#d6b656;fontSize=10;dashed=1;rounded=0;"
+          edge="1" source="rabbitmq" target="kafka" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Kafka → Event Ingestion -->
+        <mxCell id="e3" value="rule evaluation path"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#82b366;fontColor=#82b366;fontStyle=1;rounded=0;exitX=0.2;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;"
+          edge="1" source="kafka" target="em-ingest" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Kafka → ClickHouse Kafka engine -->
+        <mxCell id="e4" value="storage path&#xa;(ClickHouse pulls)"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#9673a6;fontColor=#9673a6;fontStyle=1;rounded=0;exitX=0.7;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;"
+          edge="1" source="kafka" target="ch-ke" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ClickHouse: Kafka engine → events (MV) -->
+        <mxCell id="e5" value="MV"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#9673a6;fontColor=#9673a6;fontSize=10;rounded=0;"
+          edge="1" source="ch-ke" target="ch-ev" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ClickHouse: events → daily MV -->
+        <mxCell id="e6" value="MV"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#9673a6;fontColor=#9673a6;fontSize=10;rounded=0;exitX=0.3;exitY=1;exitDx=0;exitDy=0;"
+          edge="1" source="ch-ev" target="ch-daily" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ClickHouse: events → monthly MV -->
+        <mxCell id="e7" value="MV"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#9673a6;fontColor=#9673a6;fontSize=10;rounded=0;exitX=0.7;exitY=1;exitDx=0;exitDy=0;"
+          edge="1" source="ch-ev" target="ch-monthly" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Rule Engine → ClickHouse events (agg queries) -->
+        <mxCell id="e8" value="aggregation queries (JDBC)"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#9673a6;fontColor=#9673a6;dashed=1;fontSize=10;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;"
+          edge="1" source="em-rule" target="ch-ev" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Alert Manager → alerts.fired topic -->
+        <mxCell id="e9" value="publishes"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#b85450;fontColor=#b85450;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;"
+          edge="1" source="em-alert" target="alerts-topic" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- alerts.fired → downstream consumers -->
+        <mxCell id="e10" value="subscribed by"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#b85450;fontColor=#b85450;rounded=0;"
+          edge="1" source="alerts-topic" target="downstream" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- EVENT MONITOR → Prometheus -->
+        <mxCell id="e11" value="/actuator/prometheus"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#666666;fontColor=#666666;fontSize=10;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;"
+          edge="1" source="em-bg" target="prometheus" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- React SPA ↔ EVENT MONITOR (REST) -->
+        <mxCell id="e12" value="REST API"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#666666;fontColor=#666666;rounded=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;"
+          edge="1" source="react-spa" target="em-bg" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Config Server → EVENT MONITOR (hot reload / @RefreshScope) -->
+        <mxCell id="e13" value="hot reload&#xa;(@RefreshScope)"
+          style="edgeStyle=orthogonalEdgeStyle;html=1;strokeColor=#d6b656;fontColor=#d6b656;dashed=1;fontSize=10;rounded=0;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.3;entryDx=0;entryDy=0;"
+          edge="1" source="config" target="em-bg" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

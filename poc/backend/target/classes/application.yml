@@ -1,0 +1,62 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres:5432/alerting
+    username: alerting
+    password: alerting
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    url: jdbc:postgresql://postgres:5432/alerting
+    user: alerting
+    password: alerting
+  redis:
+    host: redis
+    port: 6379
+  kafka:
+    bootstrap-servers: kafka:9092
+    consumer:
+      group-id: alerting-platform
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+clickhouse:
+  url: jdbc:clickhouse://clickhouse:8123/default
+  username: default
+  password: ""
+  kafka-broker: kafka:9092
+
+ch-readiness:
+  # Maximum time (ms) to wait for ClickHouse to catch up before releasing evaluation.
+  # After this deadline the consumer thread is unblocked with a warning — stale aggregates
+  # are preferable to an indefinitely blocked Kafka consumer.
+  max-wait-ms: 30000
+  # How often (ms) to re-check the cached committed offsets while waiting.
+  poll-interval-ms: 100
+
+aws:
+  bedrock:
+    region: ${AWS_DEFAULT_REGION:us-east-1}
+    model-id: amazon.nova-micro-v1:0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.alerting: DEBUG
+    org.springframework.kafka: WARN
