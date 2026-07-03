@@ -11,7 +11,7 @@ spring:
           uri: ${CONFIG_GIT_URI}
           password: ${CONFIG_GIT_TOKEN}
           username: git
-          default-label: main
+          default-label: master
           clone-on-start: true
           force-pull: true
           timeout: 10

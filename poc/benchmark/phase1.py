@@ -16,7 +16,7 @@ MVs are populated via INSERT…SELECT after raw seeding (faster than trigger-bas
 Usage
   docker compose up clickhouse -d                  # start clickhouse
   curl http://localhost:8123/ping                  # verify clickhosue started
-  pip install -r requirements.txt
+  pip install clickhouse-connect>=0.7.0 numpy>=1.24.0
   python phase1.py --seed                          # ~30 min total; run once
   python phase1.py --status                        # row counts + compressed sizes
   python phase1.py --bench                         # ~5 min; repeatable
@@ -49,9 +49,9 @@ RETENTION_DAYS = 30
 INSERT_BATCH   = 500_000     # rows per INSERT call (balance memory vs round-trips)
 PAYLOAD_POOL   = 50_000      # pre-built payload strings; sampled via numpy indexing
 
-BENCH_REPS         = 200     # single-threaded reps per query
-CONCURRENT_WORKERS = 50      # threads for concurrency test
-CONCURRENT_REPS    = 20      # rounds of 50-thread bursts (= 1 000 total samples)
+SINGLE_REPETITIONS     = 1000    # single-threaded reps per query
+CONCURRENT_WORKERS     = 50      # threads for concurrency test
+CONCURRENT_REPETITIONS = 100     # rounds of 50-thread bursts (= 5 000 total samples)
 
 BET_SOURCES = ["WEB", "MOBILE", "API"]
 BET_TYPES   = ["SINGLE", "ACCUMULATOR", "SYSTEM"]
@@ -344,12 +344,12 @@ def _stats(latencies: list[float]) -> dict:
     }
 
 
-def bench_query(get_client, q: dict, punter_pool: list[str]) -> tuple[dict, dict]:
+def bench_query(get_client, q: dict) -> tuple[dict, dict]:
     needs_bs = q.get("needs_bs", False)
     sql      = q["sql"]
 
     def pick() -> tuple[str, str | None]:
-        return random.choice(punter_pool), (random.choice(BET_SOURCES) if needs_bs else None)
+        return f"p{random.randint(1, NUM_PUNTERS)}", (random.choice(BET_SOURCES) if needs_bs else None)
 
     c = get_client()
 
@@ -358,15 +358,20 @@ def bench_query(get_client, q: dict, punter_pool: list[str]) -> tuple[dict, dict
         _run_query(c, sql, *pick())
 
     # single-threaded
-    single_lats = [_run_query(c, sql, *pick()) for _ in range(BENCH_REPS)]
+    single_lats = [_run_query(c, sql, *pick()) for _ in range(SINGLE_REPETITIONS)]
 
-    # concurrent: 50 threads × CONCURRENT_REPS rounds
+    # concurrent: 50 threads × CONCURRENT_REPETITIONS rounds
+    # One client per worker, created once and reused across all rounds — avoids
+    # paying connection-setup cost 1,000x (it was previously created fresh, and
+    # sequentially on the main thread, for every single call).
+    conc_clients = [get_client() for _ in range(CONCURRENT_WORKERS)]
+
     conc_lats: list[float] = []
-    for _ in range(CONCURRENT_REPS):
-        with ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as pool:
+        for _ in range(CONCURRENT_REPETITIONS):
             futs = [
-                pool.submit(_run_query, get_client(), sql, *pick())
-                for _ in range(CONCURRENT_WORKERS)
+                pool.submit(_run_query, conc_clients[i], sql, *pick())
+                for i in range(CONCURRENT_WORKERS)
             ]
             conc_lats.extend(f.result() for f in as_completed(futs))
 
@@ -485,11 +490,8 @@ def main():
     # ── bench ─────────────────────────────────────────────────────────────────
     if args.bench:
         print("\n── BENCH " + "─" * 59)
-        print(f"  Single-threaded: {BENCH_REPS} reps per query")
-        print(f"  Concurrent:      {CONCURRENT_WORKERS} threads × {CONCURRENT_REPS} rounds = {CONCURRENT_WORKERS * CONCURRENT_REPS} samples per query\n")
-
-        # Use a random subset of punters as the query population
-        punter_pool = [f"p{i}" for i in random.sample(range(1, NUM_PUNTERS + 1), 2_000)]
+        print(f"  Single-threaded: {SINGLE_REPETITIONS} reps per query")
+        print(f"  Concurrent:      {CONCURRENT_WORKERS} threads × {CONCURRENT_REPETITIONS} rounds = {CONCURRENT_WORKERS * CONCURRENT_REPETITIONS} samples per query\n")
 
         active_sources = set(args.sources)
         catalogue = [q for q in build_catalogue()
@@ -502,7 +504,7 @@ def main():
 
         for q in catalogue:
             print(f"  {q['label']}")
-            st, ct = bench_query(get_client, q, punter_pool)
+            st, ct = bench_query(get_client, q)
             slo_mark = "✓" if ct["p99"] < 200 else "✗ >200ms"
             print(f"    single  p50={st['p50']:>6.1f}ms  p95={st['p95']:>6.1f}ms  p99={st['p99']:>6.1f}ms  max={st['max']:>6.1f}ms")
             print(f"    conc    p50={ct['p50']:>6.1f}ms  p95={ct['p95']:>6.1f}ms  p99={ct['p99']:>6.1f}ms  max={ct['max']:>6.1f}ms  {slo_mark}")
