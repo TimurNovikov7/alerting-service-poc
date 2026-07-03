@@ -157,3 +157,113 @@ Results are only comparable across runs on matching hardware/resource allocation
 | external_bet \| sum(betAmount) \| 7d | raw        | 5000 | 86.1ms | 89.0ms | 120.8ms | 137.3ms | 158.7ms | ✓ |
 | external_bet \| lifetime_sum | mv_monthly | 5000 | 13.9ms | 13.2ms | 23.4ms | 28.7ms | 36.7ms | ✓ |
 
+---
+
+# Phase 2 — End-to-End Pipeline Latency Benchmark
+
+Measures wall-clock time from the moment the first triggering event is committed to Kafka until the alert appears in `GET /api/v1/alerts`.
+
+**Full pipeline under test:**
+```
+phase2.py → Kafka → KafkaConsumerManager → CHReadinessGate
+          → RuleEvaluationOrchestrator → AlertManager → PostgreSQL
+          ← GET /api/v1/alerts ← phase2.py
+```
+
+**Timing definition:**
+- `t_produce` — `datetime.now()` just before the first `producer.send()` in a trial
+- `t_detect`  — `datetime.now()` when the polling loop first sees the alert
+- `latency`   = `t_detect − t_produce` (includes ≤ 200 ms poll jitter)
+
+## Scenarios
+
+| Scenario key | Rule | Topic | Events per trial | Trigger condition |
+|---|---|---|---|---|
+| `large_withdrawal` | Large Withdrawal Alert | `withdrawal` | 1 | `payload.amount > 500` — no aggregation |
+| `login_frequency` | Suspicious Login Frequency | `punter-auth-success-login` | 4 | `agg_count > 3` in 1 day |
+| `high_bet_volume` | High Daily Betting Volume | `ebs_bets` | 3 | `agg_sum(betAmount) > 500` in 1 day |
+| `concentrated_source` | Concentrated Source Betting | `ebs_bets` | 21 | `agg_count(punter+source) > 20` in 7 days |
+
+`large_withdrawal` isolates raw pipeline latency (no CHReadinessGate wait, no aggregation query). The other three scenarios add the CHReadinessGate wait + ClickHouse aggregation query on top.
+
+## Prerequisites
+
+Full stack must be running:
+
+```bash
+# from poc/
+docker compose up -d
+```
+
+Verify all services are healthy:
+
+```bash
+curl http://localhost:8080/api/v1/rules   # → JSON array with 4 rules
+curl http://localhost:8123/ping           # → Ok.
+```
+
+Install dependencies (if not already):
+
+```bash
+pip install -r requirements.txt
+```
+
+## Commands
+
+### Run benchmark (default: 30 sequential + 10×3 concurrent trials per scenario)
+
+```bash
+python3.11 phase2.py --bench
+```
+
+### Run with production-rate background load (+300 events/s)
+
+```bash
+python3.11 phase2.py --bench --background-rate 300
+```
+
+### Run a single scenario only
+
+```bash
+python3.11 phase2.py --bench --scenarios large_withdrawal
+python3.11 phase2.py --bench --scenarios login_frequency high_bet_volume
+```
+
+### Custom trial counts
+
+```bash
+python3.11 phase2.py --bench --trials 50 --concurrent 20 --conc-rounds 5
+```
+
+### Resolve leftover benchmark alerts (run before re-benchmarking)
+
+```bash
+python3.11 phase2.py --cleanup
+```
+
+### Cleanup + bench in one go
+
+```bash
+python3.11 phase2.py --cleanup --bench
+```
+
+## Optional flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--backend` | `http://localhost:8080` | Backend base URL |
+| `--kafka` | `localhost:9092` | Kafka bootstrap servers |
+| `--trials` | `30` | Sequential trials per scenario |
+| `--concurrent` | `10` | Concurrent workers per round |
+| `--conc-rounds` | `3` | Concurrent rounds (total = workers × rounds) |
+| `--background-rate` | `0` | Background events/sec to simulate pipeline load |
+| `--scenarios` | all four | Limit to specific scenario keys |
+| `--output` | `phase2_results.csv` | CSV output path |
+
+## Interpreting results
+
+- **`large_withdrawal` sequential latency** — baseline pipeline cost: Kafka consume + inline rule evaluation + PostgreSQL write. Should be well under 1 s.
+- **Aggregation scenario overhead** — difference between aggregation scenarios and `large_withdrawal` is the CHReadinessGate wait time + ClickHouse query time.
+- **Sequential vs concurrent** — how serialised backend processing (single consumer thread per Kafka topic) affects tail latency under burst load.
+- **Timeouts** — trials that exceeded 120 s. Any timeout is a pipeline health signal.
+
