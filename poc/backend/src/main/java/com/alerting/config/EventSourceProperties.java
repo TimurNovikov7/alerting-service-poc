@@ -67,6 +67,15 @@ public class EventSourceProperties {
          * matching the group name provisioned by ClickHouseProvisioner.
          */
         private String chConsumerGroup;
+        /**
+         * Expected number of partitions for this source's topic (actual partition count
+         * comes from Kafka's {@code KAFKA_NUM_PARTITIONS} broker default on auto-create).
+         * Drives consumer parallelism: rule-evaluation container concurrency and
+         * ClickHouse's {@code kafka_num_consumers}. Messages are keyed by the entity's
+         * primary dimension so a given entity's events always land on the same partition
+         * and stay ordered.
+         */
+        private int partitions = 6;
     }
 
     @Data

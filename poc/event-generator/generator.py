@@ -180,7 +180,7 @@ def produce_loop(producer, topic: str, make_event, events_per_minute: float, sto
     while not stop_event.is_set():
         punter_id = random.choice(PUNTER_IDS)
         event = make_event(punter_id)
-        producer.send(topic, event)
+        producer.send(topic, event, key=str(punter_id).encode('utf-8'))
         logger.info(f'-> {topic}: punterId={punter_id} | {json.dumps(event, default=str)[:120]}...')
         stop_event.wait(interval)
 

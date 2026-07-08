@@ -463,6 +463,8 @@ Kafka topic: punter.auth.login
 
 **Failure independence:** A Java app restart does not affect ClickHouse ingestion — CH continues consuming from its own committed offset. A ClickHouse consumer lag **does** affect rule evaluation: `CHReadinessGate` blocks evaluation until CH catches up or the circuit breaker fires (30 s). This is intentional — a visible stall is preferable to evaluating against incomplete aggregates.
 
+**Note:** steps 3–7 run once per raw event, independently. When several events for the same entity land within one CH flush window, `CHReadinessGate` can release more than one of them for evaluation at nearly the same moment — see §5.5 for why this can produce more than one alert for what is logically a single triggering incident.
+
 ### 5.2 Auto-Resolution Flow (Aggregation-Based Rules)
 
 ```
@@ -564,6 +566,25 @@ If the CH offset does not advance within `MAX_WAIT_MS` (default 30 s), the wait 
 | Current event in `mv_monthly_*` at eval time | Deterministic | Same |
 | Cross-referenced source events at eval time | Deterministic | `END_OFFSET` mode + above |
 | Aggregation result cache freshness | Best-effort | Cache TTL (60 s); lossy by design |
+
+### 5.5 Known Limitation: Batched Ingestion Can Produce Duplicate Alerts
+
+`CHReadinessGate` guarantees an event is *visible* in ClickHouse before evaluation — it says nothing about *which other events in the same batch are also now visible*. Because ClickHouse's Kafka Table Engine flushes on a fixed interval (`kafka_flush_interval_ms`, e.g. 3 s), not per message, several events for the same entity that arrive within one flush window are committed together, as a single batch.
+
+**Mechanism:**
+1. Events E1..E4 for the same `(sourceId, entityDimensionValue)` are produced in a tight burst — well within one flush window.
+2. ClickHouse's Kafka Engine flushes all four together. `CHReadinessGate`'s `OFFSET_PAST` wait (§5.4) is satisfied for E1, E2, E3, and E4 at essentially the same instant, since the committed offset now exceeds all four events' offsets simultaneously.
+3. `RuleEvaluationOrchestrator` evaluates each event independently, querying the aggregate's *current* value at evaluation time — not a value scoped to "the state immediately after this specific event." Once the batch commits, the aggregate already reflects all four events.
+4. If the rule's threshold is crossed by the batch as a whole (e.g. `agg_count > 3` becomes true only once all 4 are counted), then E1's evaluation, E2's, E3's, and E4's can each independently observe the already-crossed aggregate and each conclude the condition is true — even though, semantically, only one of them "caused" the crossing.
+
+**Why the existing dedup guard doesn't fully prevent this:** `AlertManager.fireAlert` (§5.1 step 7) suppresses a new alert only while one is currently `OPEN` or `ACKNOWLEDGED` for the same `(ruleId, entityDimensionValue)`. It has no memory of an alert that was fired and already `RESOLVED` moments earlier from the same batch. If E1's evaluation fires and its alert is resolved (by an analyst, an integration, or an auto-resolution job) before E2/E3/E4 finish evaluating, the dedup check no longer sees an open alert to suppress against — E2 (or E3, or E4) can then fire a second, spurious alert for the same underlying incident.
+
+**When this surfaces in practice:** rarely under normal operation, since alerts are typically reviewed and resolved by an analyst over minutes to hours — far slower than the sub-second window between a batch's events evaluating. It is readily reproducible under fast automated resolution (e.g. test/benchmark tooling resolving within ~200 ms of detection) or with a short `kafka_flush_interval_ms` combined with tightly-bursted source events.
+
+**Not yet implemented — candidate mitigations:**
+- Debounce/coalesce rule evaluation per `(ruleId, entityDimensionValue)` so a burst is evaluated once, after it settles, rather than once per raw event.
+- Extend the dedup check to also suppress firing if an alert for the same `(ruleId, entityDimensionValue)` was `RESOLVED` within a short cooldown window, not only while `OPEN`/`ACKNOWLEDGED`.
+- Key the fired alert to the specific set of contributing event offsets (or the aggregate snapshot that triggered it), so re-evaluation of the same batch is recognisably a duplicate rather than a new incident.
 
 ---
 

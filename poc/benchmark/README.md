@@ -171,20 +171,24 @@ phase2.py → Kafka → KafkaConsumerManager → CHReadinessGate
 ```
 
 **Timing definition:**
-- `t_produce` — `datetime.now()` just before the first `producer.send()` in a trial
+- `t_produce` — `datetime.now()` just before the first `producer.send()` in a scenario run
 - `t_detect`  — `datetime.now()` when the polling loop first sees the alert
 - `latency`   = `t_detect − t_produce` (includes ≤ 200 ms poll jitter)
 
+**Note:** the benchmark only *detects* alerts during a scenario's trials — it deliberately does not resolve them mid-run. Resolving immediately after detection raced with the backend still evaluating the remaining events in the same trigger burst, which could make `AlertManager`'s open-alert dedup miss and create spurious duplicate alerts (a real backend-side gap, not a benchmark bug).
+
+Since punter IDs restart from `BM2_PUNTER_BASE+1` on every run, an uncleaned previous run would otherwise leave an `OPEN` alert with the exact same `(ruleId, entityDimensionValue)` a later run produces, which `run_scenario()`'s polling loop could match immediately — a false-positive near-zero latency, not a real measurement. Two layers guard against this: `main()` calls `cleanup()` automatically before each scenario starts, and `run_scenario()` additionally checks a candidate alert's `firedAt` is after this trial's own `t_produce` before accepting it as a match. Run `--cleanup` once more after the whole `--bench` run finishes, to resolve the last scenario's alerts too.
+
 ## Scenarios
 
-| Scenario key | Rule | Topic | Events per trial | Trigger condition |
+| Scenario key | Rule | Topic | Events per scenario run | Trigger condition |
 |---|---|---|---|---|
 | `large_withdrawal` | Large Withdrawal Alert | `withdrawal` | 1 | `payload.amount > 500` — no aggregation |
 | `login_frequency` | Suspicious Login Frequency | `punter-auth-success-login` | 4 | `agg_count > 3` in 1 day |
 | `high_bet_volume` | High Daily Betting Volume | `ebs_bets` | 3 | `agg_sum(betAmount) > 500` in 1 day |
 | `concentrated_source` | Concentrated Source Betting | `ebs_bets` | 21 | `agg_count(punter+source) > 20` in 7 days |
 
-`large_withdrawal` isolates raw pipeline latency (no CHReadinessGate wait, no aggregation query). The other three scenarios add the CHReadinessGate wait + ClickHouse aggregation query on top.
+`CHReadinessGate` always waits for ClickHouse to catch up on the triggering source itself, for every scenario including `large_withdrawal` — there's no exemption for non-aggregating rules. What `large_withdrawal` actually skips is the *cross-source* `END_OFFSET` wait and the ClickHouse aggregation query itself, since its rule needs no `agg_*()` call. The other three scenarios pay both the triggering-source wait and the aggregation query on top.
 
 ## Prerequisites
 
@@ -205,46 +209,48 @@ curl http://localhost:8123/ping           # → Ok.
 Install dependencies (if not already):
 
 ```bash
-pip install -r requirements.txt
+pip install clickhouse-connect>=0.7.0 numpy>=1.24.0 kafka-python<3.0.0 requests>=2.28.0 
 ```
 
 ## Commands
 
-### Run benchmark (default: 30 sequential + 10×3 concurrent trials per scenario)
+### Run benchmark (default: 30 sequential + 10×3 concurrent scenario runs per scenario)
 
 ```bash
-python3.11 phase2.py --bench
+python phase2.py --bench
 ```
 
 ### Run with production-rate background load (+300 events/s)
 
 ```bash
-python3.11 phase2.py --bench --background-rate 300
+python phase2.py --bench --background-rate 300
 ```
+
+Background-load punters (random IDs below `BM2_PUNTER_BASE`) can trip a rule purely by chance. `AutoResolutionJob` can't clean these up on any useful timescale — it only resolves an alert once the rule's own aggregation window ages out, up to 1-7 real days for these rules. So whenever `--background-rate > 0`, the benchmark runs a second background thread that sweeps and resolves all open alerts every 5s for the duration of the run, independent of the per-scenario/per-round cleanup.
 
 ### Run a single scenario only
 
 ```bash
-python3.11 phase2.py --bench --scenarios large_withdrawal
-python3.11 phase2.py --bench --scenarios login_frequency high_bet_volume
+python phase2.py --bench --scenarios large_withdrawal
+python phase2.py --bench --scenarios login_frequency high_bet_volume
 ```
 
-### Custom trial counts
+### Custom scenario run counts
 
 ```bash
-python3.11 phase2.py --bench --trials 50 --concurrent 20 --conc-rounds 5
+python phase2.py --bench --scenario-runs 50 --concurrent 20 --conc-rounds 5
 ```
 
-### Resolve leftover benchmark alerts (run before re-benchmarking)
+### Resolve all open alerts (run after benchmarking — the benchmark never auto-resolves; this clears everything, including alerts from `--background-rate` traffic, not just BM2 scenario alerts)
 
 ```bash
-python3.11 phase2.py --cleanup
+python phase2.py --cleanup
 ```
 
 ### Cleanup + bench in one go
 
 ```bash
-python3.11 phase2.py --cleanup --bench
+python phase2.py --cleanup --bench
 ```
 
 ## Optional flags
@@ -252,10 +258,11 @@ python3.11 phase2.py --cleanup --bench
 | Flag | Default | Description |
 |---|---|---|
 | `--backend` | `http://localhost:8080` | Backend base URL |
-| `--kafka` | `localhost:9092` | Kafka bootstrap servers |
-| `--trials` | `30` | Sequential trials per scenario |
+| `--kafka` | `localhost:29092` | Kafka bootstrap servers |
+| `--scenario-runs` | `30` | Sequential scenario runs per scenario |
 | `--concurrent` | `10` | Concurrent workers per round |
 | `--conc-rounds` | `3` | Concurrent rounds (total = workers × rounds) |
+| `--sequential-only` | off | Skip the concurrent phase entirely, run sequential trials only |
 | `--background-rate` | `0` | Background events/sec to simulate pipeline load |
 | `--scenarios` | all four | Limit to specific scenario keys |
 | `--output` | `phase2_results.csv` | CSV output path |
@@ -265,5 +272,73 @@ python3.11 phase2.py --cleanup --bench
 - **`large_withdrawal` sequential latency** — baseline pipeline cost: Kafka consume + inline rule evaluation + PostgreSQL write. Should be well under 1 s.
 - **Aggregation scenario overhead** — difference between aggregation scenarios and `large_withdrawal` is the CHReadinessGate wait time + ClickHouse query time.
 - **Sequential vs concurrent** — how serialised backend processing (single consumer thread per Kafka topic) affects tail latency under burst load.
-- **Timeouts** — trials that exceeded 120 s. Any timeout is a pipeline health signal.
+- **Timeouts** — scenario runs that exceeded 120 s. Any timeout is a pipeline health signal.
+
+## Results
+
+Live-testing snapshot (2026-07-06), full stack running locally (see [Phase 1 Environment](#environment) for hardware/software details — same machine and stack). All runs used the default `kafka_flush_interval_ms=3000` / 6 Kafka partitions per topic setup described above.
+
+### `--bench --background-rate {100,200,300}` — all 4 scenarios, sequential + concurrent
+
+**100 events/s** — `11,258 events sent over 112.6s ≈ 100 events/s actual`
+
+| Rule | Mode | p50 | p95 | p99 | max | Timeouts |
+|---|---|---:|---:|---:|---:|---:|
+| Large Withdrawal Alert | sequential | 3482ms | 3598ms | 3598ms | 3598ms | 0 |
+| Large Withdrawal Alert | concurrent | 3379ms | 3481ms | 3635ms | 3635ms | 0 |
+| Suspicious Login Frequency | sequential | 3667ms | 4160ms | 4160ms | 4160ms | 0 |
+| Suspicious Login Frequency | concurrent | 3759ms | 4379ms | 6471ms | 6471ms | 0 |
+| High Daily Betting Volume | sequential | 1744ms | 2151ms | 2151ms | 2151ms | 0 |
+| High Daily Betting Volume | concurrent | 2046ms | 3146ms | 3346ms | 3346ms | 0 |
+| Concentrated Source Betting | sequential | 2098ms | 2165ms | 2165ms | 2165ms | 0 |
+| Concentrated Source Betting | concurrent | 2711ms | 4673ms | 5810ms | 5810ms | 0 |
+
+**200 events/s** — `30,014 events sent over 150.1s ≈ 200 events/s actual`
+
+| Rule | Mode | p50 | p95 | p99 | max | Timeouts |
+|---|---|---:|---:|---:|---:|---:|
+| Large Withdrawal Alert | sequential | 3431ms | 3595ms | 3595ms | 3595ms | 0 |
+| Large Withdrawal Alert | concurrent | 2931ms | 3651ms | 3750ms | 3750ms | 0 |
+| Suspicious Login Frequency | sequential | 4195ms | 4982ms | 4982ms | 4982ms | 0 |
+| Suspicious Login Frequency | concurrent | 4304ms | 6877ms | 6927ms | 6927ms | 0 |
+| High Daily Betting Volume | sequential | 2818ms | 3328ms | 3328ms | 3328ms | 0 |
+| High Daily Betting Volume | concurrent | 3399ms | 3862ms | 3905ms | 3905ms | 0 |
+| Concentrated Source Betting | sequential | 2722ms | 3311ms | 3311ms | 3311ms | 0 |
+| Concentrated Source Betting | concurrent | 4660ms | 8276ms | 9593ms | 9593ms | 0 |
+
+**300 events/s** — `50,533 events sent over 168.4s ≈ 300 events/s actual`
+
+| Rule | Mode | p50 | p95 | p99 | max | Timeouts |
+|---|---|---:|---:|---:|---:|---:|
+| Large Withdrawal Alert | sequential | 2135ms | 2994ms | 2994ms | 2994ms | 0 |
+| Large Withdrawal Alert | concurrent | 1950ms | 2572ms | 2593ms | 2593ms | 0 |
+| Suspicious Login Frequency | sequential | 2147ms | 2556ms | 2556ms | 2556ms | 0 |
+| Suspicious Login Frequency | concurrent | 2879ms | 3931ms | 3932ms | 3932ms | 0 |
+| High Daily Betting Volume | sequential | 2548ms | 3656ms | 3656ms | 3656ms | 0 |
+| High Daily Betting Volume | concurrent | 3919ms | 4550ms | 4553ms | 4553ms | 0 |
+| Concentrated Source Betting | sequential | 3886ms | 4063ms | 4063ms | 4063ms | 0 |
+| Concentrated Source Betting | concurrent | 6203ms | 9255ms | 9707ms | 9707ms | 0 |
+
+**Reading these three runs together:** no timeouts at any load level, but they're not directly comparable apples-to-apples run over run — this is live testing against a shared, continuously-changing dataset (background traffic keeps accumulating history across runs — see the per-event SQL analysis below), so absolute latency drifts for reasons beyond just the background rate itself. The one **consistent** trend across all three runs is `Concentrated Source Betting`'s concurrent tail growing with load (p99/max: 5810ms → 9593ms → 9707ms at 100/200/300 events/s) — expected, since it's the most expensive rule per event (7-day window via `mv_daily_external_bet`) and shares `ebs_bets` with a second rule (`High Daily Betting Volume`), doubling that topic's per-event ClickHouse query cost versus `punter_login`'s single rule.
+
+### Per-rule throughput ceiling (isolated via `phase3.py`, no scenario/alert-detection noise)
+
+Using `phase3.py` to generate pure background load for one rule's topic at a time (bypassing `phase2.py`'s scenario trials and alert polling entirely) isolates each rule's actual sustainable ClickHouse query throughput:
+
+| Rule | Command | Sustainable query rate | Rate where Kafka latency starts increasing |
+|---|---|---:|---:|
+| Suspicious Login Frequency | `phase3.py --rate 300 --event-type punter_login --duration 120` | `events_punter_login` ≈ 18,149/min | `--rate 500` → 23,770/min, latency increasing |
+| High Daily Betting Volume | `phase3.py --rate 300 --event-type ebs_bets --duration 180` | `events_external_bet` ≈ 18,104/min | `--rate 500` → 20,092/min, latency increasing |
+| Concentrated Source Betting | `phase3.py --rate 300 --event-type ebs_bets --duration 180` | `mv_daily_external_bet` ≈ 18,035/min | `--rate 500` → 24,783/min, latency increasing |
+
+At `--rate 300` for any single rule in isolation, Kafka consumer lag stays flat (latency "stays within 300") — each rule individually has headroom well above 300 events/s. The ceiling only starts to bite around `--rate 500`, where Kafka latency begins climbing — the first sign of the consumer falling behind, before it becomes an unbounded runaway backlog.
+
+**Combined — all 3 rules simultaneously** (`phase3.py --rate 300 --event-type ebs_bets punter_login --duration 180`, i.e. 300 events/s split across the two topics, `ebs_bets` carrying both bet rules):
+
+| minute | `events_external_bet` | `mv_daily_external_bet` | `events_punter_login` |
+|---|---:|---:|---:|
+| 2026-07-06 21:26 | 8,463 | 8,465 | 8,811 |
+| 2026-07-06 21:27 | 8,784 | 8,784 | 8,710 |
+
+Per-topic query rates roughly halve compared to the isolated single-topic runs above (≈18,000/min → ≈8,500/min), consistent with splitting the same 300 events/s total across two topics instead of dedicating it fully to one — confirming the earlier finding that `ebs_bets`'s two stacked rules are the binding constraint on total system throughput, not `punter_login`'s single rule.
 

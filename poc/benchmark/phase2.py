@@ -18,11 +18,16 @@ Timing:
 Benchmark punters use IDs ≥ 9_000_000 to avoid colliding with normal traffic.
 
 Usage:
+  cd poc & docker compose up -d                  # start full stack
+  pip install clickhouse-connect>=0.7.0 numpy>=1.24.0 kafka-python<3.0.0 requests>=2.28.0
+
+
   python3.11 phase2.py --bench
-  python3.11 phase2.py --bench --trials 50 --concurrent 10 --conc-rounds 5
+  python3.11 phase2.py --bench --scenario-runs 50 --concurrent 10 --conc-rounds 5
   python3.11 phase2.py --bench --background-rate 300   # production-rate background load
   python3.11 phase2.py --bench --scenarios large_withdrawal login_frequency
-  python3.11 phase2.py --cleanup                       # resolve leftover BM2 alerts
+  python3.11 phase2.py --bench --sequential-only       # skip the concurrent phase
+  python3.11 phase2.py --cleanup                       # resolve all leftover open alerts
 """
 
 from __future__ import annotations
@@ -45,11 +50,13 @@ from kafka.errors import NoBrokersAvailable
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-BM2_PUNTER_BASE  = 9_000_000   # trial punter IDs: 9_000_001, 9_000_002, …
-POLL_INTERVAL_S  = 0.2         # alert polling cadence
-TRIAL_TIMEOUT_S  = 120         # per-trial timeout
+BM2_PUNTER_BASE        = 9_000_000   # scenario-run punter IDs: 9_000_001, 9_000_002, …
+BACKGROUND_PUNTER_POOL = 100_000     # background-load punter ID range: 1..N
+POLL_INTERVAL_S        = 0.2         # alert polling cadence
+SCENARIO_RUN_TIMEOUT_S = 120         # per-scenario-run timeout
+BACKGROUND_CLEANUP_INTERVAL_S = 3.0  # how often to sweep-resolve alerts while background load runs
 
-DEFAULT_TRIALS        = 30
+DEFAULT_SCENARIO_RUNS = 30
 DEFAULT_CONC_WORKERS  = 10
 DEFAULT_CONC_ROUNDS   = 3
 
@@ -77,6 +84,17 @@ def dim_key(dims: dict) -> str:
 
 def iso_now() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000+00:00')
+
+def parse_backend_datetime(s: str) -> datetime:
+    """Parses a Java LocalDateTime.toString() value (e.g. 'firedAt'). Java trims
+    trailing zeros from the fractional seconds, so the digit count varies (e.g.
+    '.86534' — 5 digits) — Python's strict fromisoformat only accepts 3 or 6.
+    Pad/truncate to exactly 6 digits before parsing. Backend runs in UTC.
+    """
+    if '.' in s:
+        base, frac = s.split('.', 1)
+        s = f"{base}.{(frac + '000000')[:6]}"
+    return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
 
 # ── event factories ───────────────────────────────────────────────────────────
 
@@ -171,14 +189,20 @@ SCENARIOS = [
     ),
 ]
 
-# ── trial ─────────────────────────────────────────────────────────────────────
+# ── scenario run ──────────────────────────────────────────────────────────────
 
-def run_trial(
+def run_scenario(
     scenario: Scenario,
     producer: KafkaProducer,
     backend_url: str,
 ) -> Optional[float]:
-    """Produce events, poll for alert. Returns latency in ms or None (timeout)."""
+    """Produce events, poll for alert. Returns latency in ms or None (timeout).
+
+    Deliberately does not resolve the alert it finds — resolving here raced with the
+    backend still evaluating the remaining events in the same trigger burst, which could
+    make AlertManager's open-alert dedup miss and create spurious duplicate alerts. Use
+    `--cleanup` to resolve all open alerts after benchmarking instead.
+    """
     punter_id    = next_punter_id()
     expected_dim = dim_key(scenario.dims_fn(punter_id))
     events       = scenario.events_fn(punter_id)
@@ -186,11 +210,12 @@ def run_trial(
     # Record produce time before the first send, flush to ensure broker receipt
     t_produce = datetime.now(timezone.utc)
     for evt in events:
-        producer.send(scenario.topic, value=json.dumps(evt, default=str).encode())
+        producer.send(scenario.topic, value=json.dumps(evt, default=str).encode(),
+                       key=str(punter_id).encode())
     producer.flush()
 
     # Poll until alert appears or timeout
-    deadline = time.monotonic() + TRIAL_TIMEOUT_S
+    deadline = time.monotonic() + SCENARIO_RUN_TIMEOUT_S
     while time.monotonic() < deadline:
         try:
             resp = requests.get(
@@ -202,25 +227,46 @@ def run_trial(
             for a in resp.json():
                 if (a.get("ruleId") == scenario.rule_id and
                         a.get("entityDimensionValue") == expected_dim):
+                    # Punter IDs restart from BM2_PUNTER_BASE+1 every run, so a stale
+                    # alert from a previous (uncleaned) run can share this exact
+                    # (ruleId, entityDimensionValue) pair. Only accept an alert fired
+                    # after t_produce — otherwise this is a false-positive match.
+                    try:
+                        fired_at = parse_backend_datetime(a["firedAt"])
+                    except Exception:
+                        continue
+                    if fired_at < t_produce:
+                        continue
                     t_detect = datetime.now(timezone.utc)
-                    latency  = (t_detect - t_produce).total_seconds() * 1000
-                    _resolve(backend_url, a["id"])
-                    return latency
+                    return (t_detect - t_produce).total_seconds() * 1000
         except Exception:
             pass
         time.sleep(POLL_INTERVAL_S)
 
     return None   # timed out
 
-def _resolve(backend_url: str, alert_id: str):
+def _resolve(backend_url: str, alert_id: str) -> bool:
     try:
-        requests.post(f"{backend_url}/api/v1/alerts/{alert_id}/resolve", timeout=5)
-    except Exception:
-        pass
+        resp = requests.post(f"{backend_url}/api/v1/alerts/{alert_id}/resolve", timeout=5)
+        if resp.ok:
+            return True
+        print(f"    [resolve failed] alert={alert_id} status={resp.status_code} body={resp.text[:200]!r}")
+        return False
+    except Exception as e:
+        print(f"    [resolve failed] alert={alert_id} error={e!r}")
+        return False
 
 # ── background load ───────────────────────────────────────────────────────────
 
-def _background_load(producer: KafkaProducer, rate: int, stop: threading.Event):
+# kafka-python's producer.send() is asynchronous — it serializes and enqueues into
+# an internal buffer, then returns; the actual network I/O runs in the producer's
+# own background thread, not the caller's. So there's no I/O wait in this loop for
+# multiple threads to usefully overlap: the work here is almost entirely CPU-bound
+# (dict construction, json.dumps, key encoding), which Python's GIL fully
+# serializes regardless of thread count. Empirically this tops out around ~300/s
+# no matter how high --background-rate is set — a single thread is simplest and
+# doesn't do any worse than splitting across threads did.
+def _background_load(producer: KafkaProducer, rate: int, stop: threading.Event, sent_count: list[int]):
     interval = 1.0 / rate
     topics = [
         ("punter-auth-success-login", lambda p: make_login(p)),
@@ -229,15 +275,46 @@ def _background_load(producer: KafkaProducer, rate: int, stop: threading.Event):
                                                          random.choice(BET_SOURCES))),
     ]
     i = 0
+    sent = 0
+    next_send_at = time.monotonic()
     while not stop.is_set():
         topic, fn = topics[i % 3]
-        p = random.randint(1, 1000)
+        p = random.randint(1, BACKGROUND_PUNTER_POOL)
         try:
-            producer.send(topic, value=json.dumps(fn(p), default=str).encode())
+            producer.send(topic, value=json.dumps(fn(p), default=str).encode(),
+                           key=str(p).encode())
+            sent += 1
         except Exception:
             pass
         i += 1
-        stop.wait(interval)
+        # Fixed schedule, not "sleep `interval` after each send" — otherwise every
+        # iteration's own overhead (dict build, json.dumps, key encode) stacks on
+        # top of interval, and the achieved rate falls short even when nowhere
+        # near the CPU-bound ceiling. If we're already behind schedule, don't
+        # sleep at all — best effort to catch back up.
+        next_send_at += interval
+        remaining = next_send_at - time.monotonic()
+        if remaining > 0:
+            stop.wait(remaining)
+    sent_count[0] = sent
+
+def _periodic_cleanup(backend_url: str, stop: threading.Event, interval_s: float = BACKGROUND_CLEANUP_INTERVAL_S):
+    """Sweeps and resolves alerts on a fixed interval for as long as background
+    load is running. Background-load punters (< BM2_PUNTER_BASE) can trip a rule
+    at random; AutoResolutionJob only clears an alert once its rule's own
+    aggregation window ages out — up to 1-7 real days for these rules — so left
+    alone, background-triggered alerts pile up for the entire benchmark session.
+
+    Scoped to punter_id < BM2_PUNTER_BASE only — this thread runs continuously
+    alongside active scenario trials, so it must never resolve a trial's own
+    alert (punter_id >= BM2_PUNTER_BASE) before that trial's own poll sees it
+    as OPEN, which would report a false timeout for an alert that actually
+    fired fine.
+    """
+    while not stop.is_set():
+        stop.wait(interval_s)
+        if not stop.is_set():
+            cleanup(backend_url, quiet=True, below_punter_id=BM2_PUNTER_BASE)
 
 # ── stats ─────────────────────────────────────────────────────────────────────
 
@@ -256,27 +333,35 @@ def compute_stats(lats: list[float], timeouts: int) -> dict:
 
 # ── cleanup ───────────────────────────────────────────────────────────────────
 
-def cleanup(backend_url: str):
-    print("  Resolving BM2 open/acknowledged alerts... ", end="", flush=True)
+def cleanup(backend_url: str, quiet: bool = False, below_punter_id: Optional[int] = None):
+    """Resolves open/acknowledged alerts. With below_punter_id set, only touches
+    alerts whose punter_id dimension is below that threshold — used by
+    _periodic_cleanup so it can never race an in-flight scenario trial (which
+    always uses punter_id >= BM2_PUNTER_BASE) by resolving its alert before the
+    trial's own poll sees it as OPEN.
+    """
+    if not quiet:
+        scope = f"punter_id < {below_punter_id}" if below_punter_id is not None else "all"
+        print(f"  Resolving open/acknowledged alerts ({scope})... ", end="", flush=True)
     resolved = 0
     for status in ("OPEN", "ACKNOWLEDGED"):
         try:
             for a in requests.get(f"{backend_url}/api/v1/alerts",
                                    params={"status": status}, timeout=10).json():
-                dim = a.get("entityDimensionValue", "")
-                # BM2 punter IDs are always >= 9_000_001
-                try:
-                    # The dim value is JSON; check if any numeric value >= BM2_PUNTER_BASE
-                    parsed = json.loads(dim)
-                    if any(int(v) >= BM2_PUNTER_BASE for v in parsed.values()
-                           if str(v).isdigit()):
-                        _resolve(backend_url, a["id"])
-                        resolved += 1
-                except Exception:
-                    pass
+                if below_punter_id is not None:
+                    try:
+                        dims = json.loads(a.get("entityDimensionValue", "{}"))
+                        pid = int(dims.get("punter_id", -1))
+                    except Exception:
+                        continue
+                    if pid < 0 or pid >= below_punter_id:
+                        continue
+                if _resolve(backend_url, a["id"]):
+                    resolved += 1
         except Exception:
             pass
-    print(f"{resolved} resolved.")
+    if not quiet:
+        print(f"{resolved} resolved.")
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
@@ -286,15 +371,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--bench",   action="store_true", help="run the benchmark")
-    ap.add_argument("--cleanup", action="store_true", help="resolve leftover BM2 alerts then exit")
+    ap.add_argument("--cleanup", action="store_true", help="resolve all leftover open alerts then exit")
     ap.add_argument("--backend", default="http://localhost:8080")
-    ap.add_argument("--kafka",   default="localhost:9092")
-    ap.add_argument("--trials",  type=int, default=DEFAULT_TRIALS,
-                    help=f"sequential trials per scenario (default {DEFAULT_TRIALS})")
+    ap.add_argument("--kafka",   default="localhost:29092")
+    ap.add_argument("--scenario-runs", type=int, default=DEFAULT_SCENARIO_RUNS,
+                    help=f"sequential scenario runs per scenario (default {DEFAULT_SCENARIO_RUNS})")
     ap.add_argument("--concurrent", type=int, default=DEFAULT_CONC_WORKERS,
                     help=f"concurrent workers (default {DEFAULT_CONC_WORKERS})")
     ap.add_argument("--conc-rounds", type=int, default=DEFAULT_CONC_ROUNDS,
                     help=f"concurrent rounds (default {DEFAULT_CONC_ROUNDS})")
+    ap.add_argument("--sequential-only", action="store_true",
+                    help="skip the concurrent phase entirely, run sequential trials only")
     ap.add_argument("--background-rate", type=int, default=0,
                     help="background events/sec to simulate pipeline load (default 0)")
     ap.add_argument("--scenarios", nargs="+",
@@ -356,26 +443,40 @@ def main():
 
     # ── background load ───────────────────────────────────────────────────────
     stop_bg = threading.Event()
+    bg_thread: Optional[threading.Thread] = None
+    bg_cleanup_thread: Optional[threading.Thread] = None
+    bg_sent = [0]
+    bg_start = 0.0
     if args.background_rate > 0:
-        threading.Thread(
+        bg_start = time.monotonic()
+        bg_thread = threading.Thread(
             target=_background_load,
-            args=(producer, args.background_rate, stop_bg),
-            daemon=True,
-            name="bg",
-        ).start()
-        print(f"Background load: {args.background_rate} events/s  (running)\n")
+            args=(producer, args.background_rate, stop_bg, bg_sent),
+            daemon=True, name="bg",
+        )
+        bg_thread.start()
+        # Background-load punters can trip a rule at random; sweep them on a
+        # short interval instead of leaving them to accumulate for the whole run.
+        bg_cleanup_thread = threading.Thread(
+            target=_periodic_cleanup,
+            args=(args.backend, stop_bg),
+            daemon=True, name="bg-cleanup",
+        )
+        bg_cleanup_thread.start()
+        print(f"Background load: {args.background_rate} events/s target  (running)\n")
 
     results: list[dict] = []
 
     for scenario in active:
         n_events = len(scenario.events_fn(BM2_PUNTER_BASE))
-        print(f"── {scenario.rule_name}  [{n_events} event(s) per trial]")
+        print(f"── {scenario.rule_name}  [{n_events} event(s) per scenario run]")
 
         # ── sequential ────────────────────────────────────────────────────────
-        print(f"  Sequential  ({args.trials} trials):")
+        print(f"  Sequential  ({args.scenario_runs} scenario runs):")
         seq_lats, seq_to = [], 0
-        for i in range(args.trials):
-            lat = run_trial(scenario, producer, args.backend)
+        for i in range(args.scenario_runs):
+            cleanup(args.backend, quiet=True)
+            lat = run_scenario(scenario, producer, args.backend)
             if lat is None:
                 seq_to += 1
                 print(f"    [{i+1:>3}]  TIMEOUT")
@@ -391,36 +492,47 @@ def main():
             results.append({"scenario": scenario.key, "rule": scenario.rule_name,
                             "mode": "sequential", **st})
         else:
-            print(f"  → all {seq_to} trials timed out\n")
+            print(f"  → all {seq_to} scenario runs timed out\n")
 
         # ── concurrent ────────────────────────────────────────────────────────
-        total_concurrent = args.concurrent * args.conc_rounds
-        print(f"  Concurrent  ({args.concurrent} workers × {args.conc_rounds} rounds"
-              f" = {total_concurrent} trials):")
-        conc_lats, conc_to = [], 0
-        for r in range(args.conc_rounds):
-            with ThreadPoolExecutor(max_workers=args.concurrent) as pool:
-                futs = [pool.submit(run_trial, scenario, producer, args.backend)
-                        for _ in range(args.concurrent)]
-                for f in as_completed(futs):
-                    lat = f.result()
-                    if lat is None:
-                        conc_to += 1
-                    else:
-                        conc_lats.append(lat)
-            print(f"    round {r+1}/{args.conc_rounds}: "
-                  f"{len(conc_lats)} done, {conc_to} timeouts")
+        if not args.sequential_only:
+            total_concurrent = args.concurrent * args.conc_rounds
+            print(f"  Concurrent  ({args.concurrent} workers × {args.conc_rounds} rounds"
+                  f" = {total_concurrent} scenario runs):")
+            conc_lats, conc_to = [], 0
+            for r in range(args.conc_rounds):
+                cleanup(args.backend, quiet=True)
+                with ThreadPoolExecutor(max_workers=args.concurrent) as pool:
+                    futs = [pool.submit(run_scenario, scenario, producer, args.backend)
+                            for _ in range(args.concurrent)]
+                    for f in as_completed(futs):
+                        lat = f.result()
+                        if lat is None:
+                            conc_to += 1
+                        else:
+                            conc_lats.append(lat)
+                print(f"    round {r+1}/{args.conc_rounds}: "
+                      f"{len(conc_lats)} done, {conc_to} timeouts")
 
-        if conc_lats:
-            ct = compute_stats(conc_lats, conc_to)
-            print(f"  → mean={ct['mean']}ms  p50={ct['p50']}ms  "
-                  f"p95={ct['p95']}ms  p99={ct['p99']}ms  "
-                  f"max={ct['max']}ms  timeouts={conc_to}\n")
-            results.append({"scenario": scenario.key, "rule": scenario.rule_name,
-                            "mode": "concurrent", **ct})
+            if conc_lats:
+                ct = compute_stats(conc_lats, conc_to)
+                print(f"  → mean={ct['mean']}ms  p50={ct['p50']}ms  "
+                      f"p95={ct['p95']}ms  p99={ct['p99']}ms  "
+                      f"max={ct['max']}ms  timeouts={conc_to}\n")
+                results.append({"scenario": scenario.key, "rule": scenario.rule_name,
+                                "mode": "concurrent", **ct})
 
     # ── stop background ───────────────────────────────────────────────────────
     stop_bg.set()
+    if bg_thread:
+        bg_thread.join(timeout=2)
+        elapsed = time.monotonic() - bg_start
+        actual_total = bg_sent[0]
+        actual_rate = actual_total / elapsed if elapsed > 0 else 0
+        print(f"Background load actual: {actual_total} events sent over {elapsed:.1f}s "
+              f"≈ {actual_rate:.0f} events/s (target was {args.background_rate}/s)\n")
+    if bg_cleanup_thread:
+        bg_cleanup_thread.join(timeout=2)
     producer.close()
 
     # ── summary ───────────────────────────────────────────────────────────────

@@ -56,6 +56,9 @@ public class ClickHouseProvisioner implements ApplicationRunner {
         log.info("Provisioning ClickHouse tables for source: {}", sourceId);
 
         // 1. Kafka engine table — reads raw JSON message as a single String
+        // kafka_num_consumers matches the topic's partition count so ClickHouse's own
+        // ingestion can consume all partitions in parallel rather than round-robin them
+        // through a single internal consumer thread.
         String kafkaTable = String.format(
                 "CREATE TABLE IF NOT EXISTS kafka_%s (raw String) " +
                 "ENGINE = Kafka " +
@@ -64,9 +67,10 @@ public class ClickHouseProvisioner implements ApplicationRunner {
                 "  kafka_topic_list = '%s'," +
                 "  kafka_group_name = 'clickhouse-%s'," +
                 "  kafka_format = 'JSONAsString'," +
-                "  kafka_num_consumers = 1," +
-                "  kafka_skip_broken_messages = 10",
-                sourceId, kafkaBroker, topic, sourceId);
+                "  kafka_num_consumers = %d," +
+                "  kafka_skip_broken_messages = 10," +
+                "  kafka_flush_interval_ms = 3000",
+                sourceId, kafkaBroker, topic, sourceId, source.getKafka().getPartitions());
         executeSafely("kafka_" + sourceId, kafkaTable);
 
         // 2. Events table — one typed dim_<name> column per configured dimension

@@ -124,10 +124,14 @@ public class KafkaConsumerManager implements ApplicationListener<ContextRefreshe
         DefaultKafkaConsumerFactory<String, String> factory = new DefaultKafkaConsumerFactory<>(consumerProps);
         ConcurrentMessageListenerContainer<String, String> container =
                 new ConcurrentMessageListenerContainer<>(factory, props);
+        // One listener thread per partition, up to the configured partition count, so a
+        // burst on one entity's partition doesn't queue up behind unrelated traffic on
+        // other partitions of the same topic.
+        container.setConcurrency(source.getKafka().getPartitions());
         container.start();
         containers.put(source.getId(), container);
-        log.info("Started Kafka consumer for source: {} -> topic: {}",
-                source.getId(), source.getKafka().getTopic());
+        log.info("Started Kafka consumer for source: {} -> topic: {} (concurrency={})",
+                source.getId(), source.getKafka().getTopic(), source.getKafka().getPartitions());
     }
 
     @SuppressWarnings("unchecked")
